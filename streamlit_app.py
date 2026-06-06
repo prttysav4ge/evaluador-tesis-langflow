@@ -256,11 +256,23 @@ def _client() -> TestClient:
     return get_backend_client()
 
 
+# Guarda el último error de arranque/health del backend embebido para poder
+# mostrarlo en el panel "Backend no disponible" (antes se tragaba en silencio).
+_LAST_BACKEND_ERROR: str = ""
+
+
 def api_health():
+    global _LAST_BACKEND_ERROR
     try:
         r = _client().get(f"{API_PREFIX}/health")
-        return r.json() if r.status_code == 200 else None
+        if r.status_code == 200:
+            _LAST_BACKEND_ERROR = ""
+            return r.json()
+        _LAST_BACKEND_ERROR = f"HTTP {r.status_code} en /health: {r.text[:500]}"
+        return None
     except Exception:
+        import traceback
+        _LAST_BACKEND_ERROR = traceback.format_exc()
         return None
 
 
@@ -2158,6 +2170,9 @@ def main():
             "espera ~30 s y recarga.\n"
             "- Memoria insuficiente: el modelo necesita ~500 MB libres."
         )
+        if _LAST_BACKEND_ERROR:
+            st.markdown("**Error real del backend (traceback):**")
+            st.code(_LAST_BACKEND_ERROR, language="text")
         return
 
     # ── Recuperación de sesión: si el usuario refresca la página y ya hay
