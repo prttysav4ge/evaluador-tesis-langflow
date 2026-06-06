@@ -1,0 +1,49 @@
+# docker-compose.yml — versión LOCAL del Evaluador de Tesis con Langflow.
+#
+# Decisión de arquitectura: aquí SOLO se containeriza el motor de flujos
+# (Langflow). El backend FastAPI + el frontend Streamlit siguen ejecutándose
+# en el host (`streamlit run streamlit_app.py`), exactamente igual que en la
+# versión Flowise. Por eso el host alcanza Langflow vía el puerto publicado:
+#     LANGFLOW_URL=http://localhost:7860   (ver .env)
+#
+# No hay servicio backend en este compose, así que NO hay `depends_on`.
+# `${GROQ_API_KEY}` se interpola desde el archivo .env de esta misma carpeta.
+
+services:
+  langflow:
+    image: langflowai/langflow:latest
+    ports:
+      - "7860:7860"
+    # La imagen corre como uid=1000; un volumen nombrado nuevo se crea como root
+    # y el usuario 1000 no puede escribir su DB/secret_key (PermissionError en
+    # /app/data). Para dev local corremos como root: simple y sin choques de
+    # permisos sobre el volumen persistido.
+    user: root
+    volumes:
+      - ./flows:/app/flows
+      # PERSISTENCIA: Langflow guarda los flujos, el usuario y la API key en una
+      # base de datos SQLite dentro de LANGFLOW_CONFIG_DIR. Sin este volumen, cada
+      # reinicio del contenedor BORRA el flujo y el LANGFLOW_FLOW_ID del .env queda
+      # inválido. El volumen nombrado hace que el flujo sobreviva a `down`/`up`.
+      # Se monta en /app/data (el HOME del contenedor, config dir por defecto).
+      - langflow-data:/app/data
+    environment:
+      - LANGFLOW_AUTO_LOGIN=true
+      # Desde Langflow v1.5, AUTO_LOGIN exige API key en /api/v1/run salvo que
+      # se active este skip. Lo activamos para que el backend llame al flujo sin
+      # x-api-key (LANGFLOW_API_KEY queda vacío en .env), igual que el diseño
+      # original del cliente.
+      - LANGFLOW_SKIP_AUTH_AUTO_LOGIN=true
+      # Directorio persistido (ver volumen langflow-data): aquí viven secret_key,
+      # caché y fotos de perfil.
+      - LANGFLOW_CONFIG_DIR=/app/data
+      # CLAVE: la DB SQLite NO vive en CONFIG_DIR por defecto, sino dentro del
+      # paquete instalado (/app/.venv/.../langflow/langflow.db), que NO está en el
+      # volumen → el flujo se perdía en cada recreate. La reubicamos al volumen
+      # persistido (cuatro barras = ruta absoluta).
+      - LANGFLOW_DATABASE_URL=sqlite:////app/data/langflow.db
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    restart: unless-stopped
+
+volumes:
+  langflow-data:

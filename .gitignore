@@ -1,0 +1,123 @@
+# ============================================
+# .gitignore — Evaluador de Tesis (Python + Flowise)
+# ============================================
+
+# ----- Variables de entorno (SECRETOS — nunca subir) -----
+.env
+.env.local
+.env.*.local
+# .env.example  ← sí se sube: sirve como plantilla para otros devs
+
+# ----- Tokens / API keys de Langflow (SECRETOS — nunca subir) -----
+# Generados al loguearse contra Langflow; contienen access_token / api_key.
+auto.json
+auto_login_resp.json
+login.json
+apikey.json
+
+# ----- Volcados/artefactos de construcción del flujo (regenerables, pesados) -----
+# Tooling local de Langflow; la app desplegada (Streamlit Cloud) NO los necesita.
+# lf_all.json (catálogo de componentes, ~4MB) lo usa build_flow.py en local; se
+# conserva en tu disco pero se mantiene FUERA del repo. Regenerable con
+# GET /api/v1/all contra un Langflow corriendo.
+flows_list.json
+cur_flow.json
+chain.json
+lf_all.json
+evaluador_tesis_agentflow.json
+flow_id.txt
+
+# ----- Artefactos de pruebas locales (Playwright, etc.) -----
+__pwtest/
+__nb_test.log
+
+# ----- Streamlit: secrets locales -----
+.streamlit/secrets.toml
+
+# ----- Python: bytecode y caché -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# ----- Python: paquetes y distribución -----
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+MANIFEST
+
+# ----- Entornos virtuales -----
+.venv/
+venv/
+env/
+ENV/
+# Lib/ y Scripts/ del venv solo cuando estan dentro de .venv/venv/env
+**/.venv/Lib/
+**/.venv/Scripts/
+**/venv/Lib/
+**/venv/Scripts/
+pyvenv.cfg
+
+# ----- Base de datos vectorial (ChromaDB) -----
+# Archivos generados localmente; se reconstruyen desde los PDFs fuente
+chroma_db/
+
+# ----- Biblioteca Metodológica -----
+# Los PDFs de referencia SÍ se trackean en reference_books/ porque el
+# lifespan los auto-indexa en producción si la colección Chroma está vacía
+# (sin esto, Streamlit Cloud no tendría manera de ejecutar el indexador).
+# PDFs en cualquier otra ubicación quedan ignorados.
+*.pdf
+!reference_books/*.pdf
+
+# ----- Archivos de base de datos -----
+*.db
+*.sqlite
+*.sqlite3
+
+# ----- Claude Code: configuración local de permisos -----
+.claude/settings.local.json
+
+# ----- Flowise: instalación / repositorio anidado -----
+# flowise-taller tiene su propio .git → es un repo independiente, no se trackea
+flowise-taller/
+
+# ----- Logs -----
+*.log
+logs/
+
+# ----- Archivos temporales / caché -----
+*.tmp
+*.temp
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ----- IDEs y editores -----
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
+
+# ----- Sistema operativo -----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini

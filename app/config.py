@@ -1,0 +1,71 @@
+"""
+Configuración central del proyecto via variables de entorno.
+Carga automáticamente el archivo .env
+"""
+from pydantic_settings import BaseSettings
+from typing import Optional
+import os
+
+
+class Settings(BaseSettings):
+    # ----- SERVIDOR -----
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    DEBUG: bool = True
+
+    # ----- LLM -----
+    # El proveedor se elige automáticamente según las claves disponibles:
+    # Groq → OpenAI → Ollama (en ese orden de prioridad).
+    # Puedes forzar uno con LLM_PROVIDER=groq|openai|ollama.
+    LLM_PROVIDER: str = "auto"   # "auto" | "groq" | "openai" | "ollama"
+
+    # Groq (recomendado: usa los mismos modelos que Flowise, sin coste extra)
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.1-8b-instant"   # mismo modelo que el Agentflow
+
+    # OpenAI
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
+    # Ollama
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "llama3.2"
+
+    # ----- LANGFLOW (motor de flujos local en Docker) -----
+    # El backend corre en el host y alcanza a Langflow por el puerto publicado
+    # del contenedor (ver docker-compose.yml).
+    USE_LANGFLOW: bool = True
+    LANGFLOW_URL: str = "http://localhost:7860"
+    # Acepta el UUID del flujo o su endpoint_name estable (p.ej. "evaluador-tesis").
+    LANGFLOW_FLOW_ID: str = ""
+    # Auth del endpoint /run. Tres modos (ver langflow/client.py):
+    #   1) LANGFLOW_API_KEY fija    → se envía como x-api-key (puede expirar si el
+    #      servidor tiene almacenamiento efímero, p.ej. un HF Space gratis).
+    #   2) Credenciales de superuser → el cliente hace login y CREA una API key en
+    #      runtime; la regenera si el servidor reinició (robusto en HF Space).
+    #   3) Ninguna                  → sin auth (Langflow local con AUTO_LOGIN + skip).
+    LANGFLOW_API_KEY: str = ""
+    LANGFLOW_SUPERUSER: str = ""
+    LANGFLOW_SUPERUSER_PASSWORD: str = ""
+
+    # ----- EMBEDDINGS -----
+    EMBEDDING_MODEL: str = "intfloat/multilingual-e5-small"
+
+    # ----- CHROMADB -----
+    CHROMA_PERSIST_DIR: str = "./chroma_db"
+    CHROMA_COLLECTION: str = "academic_thesis"
+
+    # ----- RAG -----
+    TOP_K: int = 5
+
+    # ----- CHUNKING -----
+    CHUNK_SIZE: int = 800
+    CHUNK_OVERLAP: int = 150
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
+
+
+settings = Settings()

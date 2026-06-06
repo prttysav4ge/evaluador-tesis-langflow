@@ -1,0 +1,17 @@
+# Configuración de Streamlit para el Evaluador de Tesis.
+#
+# fileWatcherType = "none": APAGA el watcher de archivos. Sin esto, en cada
+# arranque/rerun Streamlit recorre todos los módulos cargados para vigilarlos;
+# al inspeccionar `transformers` (dependencia de sentence-transformers) cada
+# "image processor" hace `from torchvision...`, que NO está instalado (ni hace
+# falta: usamos embeddings de TEXTO), y genera cientos de tracebacks
+# `ModuleNotFoundError: No module named 'torchvision'` — ruido inofensivo que
+# inunda la terminal. Apagar el watcher lo elimina de raíz. No perdemos nada:
+# el auto-reload al editar no aplica en producción (Streamlit Cloud) y para
+# desarrollo basta reiniciar la app.
+[server]
+fileWatcherType = "none"
+
+[logger]
+# Menos verborrea de librerías de terceros en el arranque.
+level = "info"

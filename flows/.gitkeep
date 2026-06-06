@@ -1,0 +1,2 @@
+# Carpeta montada en el contenedor de Langflow (./flows:/app/flows).
+# Aquí puedes exportar/guardar el JSON del flujo creado en la UI de Langflow.
