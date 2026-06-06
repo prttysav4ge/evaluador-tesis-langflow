@@ -1,133 +1,190 @@
 """
-Métricas NLP.
+Métricas de evaluación del ciclo de mentoría.
 
-Compara el texto original analizado (la sección de tesis recuperada del PDF)
-contra el texto sugerido por el pipeline (output del Redactor / generate_texto_sugerido).
+Stack EXACTO (las 4 que se calculan siempre):
 
-Las métricas se calculan en el frontend Streamlit (no en el pipeline LLM) para
-no añadir latencia al request principal. Se invocan post-render desde la
-Pestaña 4 (Reportes).
+  1. G-Eval (LLM-as-judge, estilo G-Eval) — métrica PRIMARIA de calidad. Evalúa
+     el TEXTO DE SALIDA (reescrito por el Redactor) en escala 1-5 contra la
+     rúbrica. La produce el JUEZ (services.judge_service), un modelo DISTINTO
+     del generador para evitar sesgo. → geval_quality().
 
-Métricas implementadas:
-  - ROUGE-1, ROUGE-2, ROUGE-L (f-measure) — overlap de unigramas, bigramas, LCS.
-  - BLEU                                  — n-gram precision con brevity penalty.
-  - Similitud coseno                      — sobre embeddings multilingual-e5.
-  - Gain Score (Hake)                     — mejora normalizada de puntaje.
-  - Cohen's Kappa                         — acuerdo entre 2 listas categóricas.
-  - Consistencia entre iteraciones        — proxy más legible que Kappa cuando
-                                            hay N≥2 iteraciones del panel.
+  2. Gain Score (ganancia de Hake) — métrica de PROCESO. g = (post-pre)/(máx-pre).
+     `pre` y `post` son la nota de rúbrica (en PUNTOS) del texto de ENTRADA y de
+     SALIDA, ambas calificadas por el MISMO juez con la MISMA rúbrica. Nunca un
+     auto-score de agente. → compute_gain_score().
 
-Estrategia de fallback: cada métrica es safe-fail. Si una librería no está
-instalada o el cómputo arroja excepción, devolvemos None en ese campo
-(la UI lo renderiza como "—") en vez de propagar el error.
+  3. Cosine Similarity (embeddings multilingüe e5) — GUARDRAIL semántico, NO mide
+     calidad. Cálculo determinista (sin LLM). Compara ENTRADA vs SALIDA: muy alto
+     = no reescribió; muy bajo = se desvió del sentido. → compute_cosine_similarity().
+
+  4. Context Precision (componente RAG, variante SIN referencia, equivalente a
+     `llm_context_precision_without_reference` de Ragas) — mide si los fragmentos
+     recuperados de los LIBROS indexados son relevantes. Average Precision sobre
+     veredictos de relevancia del juez. → compute_context_precision().
+
+Métrica CONDICIONAL (5) — Iterative Consistency: solo válida con ≥2 iteraciones
+equivalentes. Queda IMPLEMENTADA pero DESACTIVADA (ITERATIVE_CONSISTENCY_ENABLED).
+
+Nota sobre Ragas: el paquete `ragas` no es instalable en este entorno
+(Python 3.14 + langchain v1: ragas 0.3/0.4 requieren scikit-network sin wheel
+para 3.14, y ragas 0.2 importa módulos que langchain v1 ya removió). Por eso la
+métrica 4 reimplementa FIELMENTE el algoritmo de
+`llm_context_precision_without_reference` con el mismo juez LLM: mismos veredictos
+de relevancia por chunk y la misma fórmula de Average Precision. El resultado es
+equivalente al de Ragas, sin la dependencia pesada.
+
+Métricas ELIMINADAS en este refactor (ya NO se calculan): ROUGE, BLEU, Toulmin
+automático, LDA Coherence, Answer Correctness, Cohen's Kappa y Quadratic
+Weighted Kappa, y cualquier auto-score de agente usado como nota.
+
+Estrategia de fallback: cada métrica es safe-fail (None ante error), para que la
+UI muestre "—" en vez de romper el cálculo completo.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# La métrica condicional (Iterative Consistency) queda desactivada hasta que el
+# flujo garantice ≥2 iteraciones EQUIVALENTES del panel. Mientras esté en False,
+# compute_iteration_consistency() devuelve None y la UI no la muestra.
+ITERATIVE_CONSISTENCY_ENABLED = False
+
 
 # ---------------------------------------------------------------------- #
-#  Métricas individuales                                                  #
+#  2/3. Cálculos DETERMINISTAS (sin LLM)                                  #
 # ---------------------------------------------------------------------- #
-
-def compute_rouge(reference: str, hypothesis: str) -> Dict[str, float]:
-    """ROUGE-1/2/L f-measure (rango 0-1). Mayor = mayor overlap léxico."""
-    from rouge_score import rouge_scorer
-
-    scorer = rouge_scorer.RougeScorer(
-        ["rouge1", "rouge2", "rougeL"], use_stemmer=False
-    )
-    scores = scorer.score(reference, hypothesis)
-    return {
-        "rouge1": round(scores["rouge1"].fmeasure, 4),
-        "rouge2": round(scores["rouge2"].fmeasure, 4),
-        "rougeL": round(scores["rougeL"].fmeasure, 4),
-    }
-
-
-def compute_bleu(reference: str, hypothesis: str) -> float:
-    """BLEU corpus normalizado a [0,1]. Mayor = más fluidez vs referencia."""
-    from sacrebleu import corpus_bleu
-
-    bleu = corpus_bleu([hypothesis], [[reference]])
-    return round(bleu.score / 100.0, 4)
-
 
 def compute_cosine_similarity(text1: str, text2: str) -> float:
     """
-    Similitud coseno [0,1] sobre embeddings multilingual-e5 (ya normalizados).
-    Reutiliza el embedder singleton del backend para no pagar la carga de
-    modelo dos veces.
+    GUARDRAIL semántico: similitud coseno [0,1] sobre embeddings multilingual-e5
+    (ya normalizados). Reutiliza el embedder singleton del backend. NO mide
+    calidad: solo alerta si el texto no se reescribió (≈1) o se desvió (≈0).
     """
     import numpy as np
 
     from embeddings.embedder import embedder
 
     vectors = embedder.embed_documents([text1, text2])
-    v1, v2  = np.array(vectors[0]), np.array(vectors[1])
-    # embed_documents normaliza los vectores → cos sim = dot product directo
+    v1, v2 = np.array(vectors[0]), np.array(vectors[1])
+    # embed_documents normaliza los vectores → cos sim = producto punto directo.
     return round(float(np.dot(v1, v2)), 4)
 
 
 def compute_gain_score(
     score_before: float,
     score_after: float,
-    max_score: float = 10.0,
-) -> float:
+    max_score: float,
+) -> Optional[float]:
     """
-    Ganancia normalizada de Hake: g = (post - pre) / (max - pre).
-    Rango [-1, 1]. Positivo = mejora; negativo = retroceso.
+    Ganancia normalizada de Hake: g = (post - pre) / (máx - pre).
+
+    `score_before`/`score_after` son la nota de rúbrica EN PUNTOS de la ENTRADA y
+    la SALIDA (mismo juez, misma rúbrica). `max_score` es el máximo de las
+    secciones evaluadas. Rango [-1, 1]: positivo = mejora; negativo = retroceso.
+
+    Devuelve None si el denominador no es positivo (la entrada ya estaba en el
+    máximo, o datos faltantes): el Gain no está definido ahí.
     """
+    if score_before is None or score_after is None or max_score is None:
+        return None
     denom = max_score - score_before
     if denom <= 0:
-        return 0.0
+        return None
     return round((score_after - score_before) / denom, 4)
 
 
-def compute_kappa(ratings_a: list, ratings_b: list) -> Optional[float]:
-    """
-    Cohen's Kappa entre 2 evaluadores (categorías discretas). Si recibe
-    listas vacías o asimétricas devuelve None.
+# ---------------------------------------------------------------------- #
+#  4. Context Precision (RAG) — fiel a llm_context_precision_without_reference
+# ---------------------------------------------------------------------- #
 
-    Las "categorías" típicas para puntajes de tesis son:
-       0-3 = insuficiente
-       4-6 = aceptable
-       7-8 = bueno
-       9-10 = excelente
-    El caller debe binarizar antes si pasa puntajes continuos.
+def _average_precision(verdicts: List[int]) -> Optional[float]:
     """
-    if not ratings_a or not ratings_b or len(ratings_a) != len(ratings_b):
+    Average Precision sobre una lista ordenada de veredictos 0/1, idéntica a la
+    de Ragas: AP = Σ_k (P@k · v_k) / Σ_k v_k, con P@k = (Σ_{j≤k} v_j) / k.
+    Devuelve 0.0 si no hay ningún relevante; None si la lista está vacía.
+    """
+    if not verdicts:
         return None
-    n = len(ratings_a)
-    if n == 0:
-        return None
-    # Acuerdo observado
-    p_o = sum(1 for a, b in zip(ratings_a, ratings_b) if a == b) / n
-    # Acuerdo esperado por azar (asume distribución igual entre categorías)
-    cats = set(ratings_a) | set(ratings_b)
-    p_e = sum(
-        (ratings_a.count(c) / n) * (ratings_b.count(c) / n)
-        for c in cats
+    total_rel = sum(verdicts)
+    if total_rel == 0:
+        return 0.0
+    acumulado = 0
+    suma_precisions = 0.0
+    for k, v in enumerate(verdicts, start=1):
+        if v:
+            acumulado += 1
+            suma_precisions += acumulado / k
+    return round(suma_precisions / total_rel, 4)
+
+
+async def compute_context_precision(
+    question: str,
+    retrieved_contexts: List[str],
+    response: str = "",
+    llm=None,
+) -> Dict[str, Any]:
+    """
+    Context Precision SIN referencia sobre los fragmentos de los LIBROS.
+
+    El juez emite un veredicto de relevancia 0/1 por fragmento (en una sola
+    llamada por eficiencia) y luego se calcula el Average Precision de forma
+    determinista. Equivalente a Ragas llm_context_precision_without_reference.
+
+    Returns:
+        {"score": float|None, "veredictos": [int], "detalle": [{idx,relevante,razon}], "ok": bool}
+    """
+    from prompts.agent_prompts import build_context_precision_prompt
+    from services.judge_service import _ask_judge
+
+    contextos = [c for c in (retrieved_contexts or []) if c and c.strip()]
+    if not contextos:
+        return {"score": None, "veredictos": [], "detalle": [], "ok": False}
+
+    fragmentos = "\n\n".join(
+        f"[Fragmento {i}]\n{c}" for i, c in enumerate(contextos, start=1)
     )
-    if p_e == 1.0:
-        return 1.0  # perfecto y trivial
-    return round((p_o - p_e) / (1 - p_e), 4)
+    prompt = build_context_precision_prompt(question, response, fragmentos)
+    try:
+        data = await _ask_judge(prompt, llm)
+        raw = data.get("veredictos", []) or []
+        # Mapea por idx para respetar el orden aunque el juez los reordene.
+        por_idx: Dict[int, Dict[str, Any]] = {}
+        for v in raw:
+            try:
+                idx = int(v.get("idx"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            por_idx[idx] = v
+        veredictos: List[int] = []
+        detalle: List[Dict[str, Any]] = []
+        for i in range(1, len(contextos) + 1):
+            v = por_idx.get(i, {})
+            rel = 1 if int(v.get("relevante", 0) or 0) == 1 else 0
+            veredictos.append(rel)
+            detalle.append({"idx": i, "relevante": rel, "razon": str(v.get("razon", ""))})
+        score = _average_precision(veredictos)
+        return {"score": score, "veredictos": veredictos, "detalle": detalle, "ok": True}
+    except Exception as exc:
+        logger.warning("compute_context_precision falló (%s).", exc)
+        return {"score": None, "veredictos": [], "detalle": [], "ok": False}
 
 
-def compute_iteration_consistency(scores: list[float]) -> Optional[float]:
+# ---------------------------------------------------------------------- #
+#  5. Iterative Consistency (CONDICIONAL — DESACTIVADA)                    #
+# ---------------------------------------------------------------------- #
+
+def compute_iteration_consistency(scores: List[float]) -> Optional[float]:
     """
-    Consistencia simple entre iteraciones: proporción de puntajes que
-    quedan dentro de ±1.0 del promedio. Rango [0, 1]. 1.0 = todos los
-    puntajes coinciden ±1; valores bajos indican alta varianza entre
-    iteraciones (el panel cambió mucho de opinión).
-
-    Se usa como proxy de "Kappa" en la UI cuando hay >=2 iteraciones,
-    porque Cohen kappa estricto requiere binarizar y con pocos puntos
-    (1-3) da resultados volátiles.
+    [DESACTIVADA] Consistencia entre iteraciones: proporción de puntajes dentro
+    de ±1.0 del promedio. Solo es válida si el flujo corre ≥2 iteraciones
+    EQUIVALENTES del panel. Mientras ITERATIVE_CONSISTENCY_ENABLED sea False,
+    devuelve None y no se muestra en la UI.
     """
+    if not ITERATIVE_CONSISTENCY_ENABLED:
+        return None
     if not scores or len(scores) < 2:
         return None
     avg = sum(scores) / len(scores)
@@ -136,61 +193,95 @@ def compute_iteration_consistency(scores: list[float]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------- #
-#  Agregador                                                              #
+#  Orquestador on-demand                                                   #
 # ---------------------------------------------------------------------- #
 
-def compute_all(
-    reference: str,
-    hypothesis: str,
-    score_before: Optional[float] = None,
-    score_after:  Optional[float] = None,
+async def compute_all_metrics(
+    *,
+    input_text: str,
+    output_text: str,
+    question: str,
+    secciones: Optional[List[int]] = None,
+    reference_chunks: Optional[List[str]] = None,
+    pre_grade: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Calcula todas las métricas comparando reference (original) vs hypothesis
-    (sugerido). Safe-fail: cada métrica fallida queda en None en lugar de
-    abortar el cómputo entero.
+    Calcula las 4 métricas comparando el texto de ENTRADA (input_text) con el de
+    SALIDA (output_text). Pensado para invocarse on-demand desde la Pestaña 4.
 
-    Returns:
-        {
-            "rouge1": float | None,
-            "rouge2": float | None,
-            "rougeL": float | None,
-            "bleu":   float | None,
-            "cosine_similarity": float | None,
-            "gain_score":       float | None,   # solo si se pasan ambos scores
-            "kappa":            None,            # compute_all no recibe raters; el
-                                                 # frontend usa compute_kappa directo
-                                                 # con puntajes binarizados si los tiene
-        }
+    Reusa trabajo del pipeline cuando está disponible:
+      - `secciones`: secciones de rúbrica seleccionadas (las elige el Redactor).
+        Si no se pasan, el juez las selecciona aquí.
+      - `pre_grade`: nota de rúbrica de la ENTRADA ya calculada por el Redactor
+        (evita recalificar la entrada). Si no se pasa, se califica aquí.
+
+    Cada métrica es safe-fail (None ante error). Devuelve un dict plano + detalles.
     """
-    metrics: Dict[str, Any] = {}
+    from services import judge_service, rubric_service
 
-    try:
-        metrics.update(compute_rouge(reference, hypothesis))
-    except Exception as exc:
-        logger.warning(f"compute_rouge falló: {exc}")
-        metrics["rouge1"] = metrics["rouge2"] = metrics["rougeL"] = None
+    metrics: Dict[str, Any] = {
+        "geval": None,
+        "gain_score": None,
+        "gain_detail": None,
+        "cosine_similarity": None,
+        "context_precision": None,
+        "context_precision_detail": None,
+        "iteration_consistency": compute_iteration_consistency([]),  # None (desactivada)
+        "secciones": [],
+        "rubrica_entrada": pre_grade,
+        "rubrica_salida": None,
+    }
 
-    try:
-        metrics["bleu"] = compute_bleu(reference, hypothesis)
-    except Exception as exc:
-        logger.warning(f"compute_bleu falló: {exc}")
-        metrics["bleu"] = None
-
-    try:
-        metrics["cosine_similarity"] = compute_cosine_similarity(reference, hypothesis)
-    except Exception as exc:
-        logger.warning(f"compute_cosine_similarity falló: {exc}")
-        metrics["cosine_similarity"] = None
-
-    if score_before is not None and score_after is not None:
+    # ── Selección de secciones (reusa la del Redactor si vino) ────────────
+    if not secciones:
         try:
-            metrics["gain_score"] = compute_gain_score(score_before, score_after)
+            sel = await judge_service.select_rubric_sections(question, input_text)
+            secciones = sel.get("secciones", [])
         except Exception as exc:
-            logger.warning(f"compute_gain_score falló: {exc}")
-            metrics["gain_score"] = None
-    else:
-        metrics["gain_score"] = None
+            logger.warning("metrics: selección de secciones falló (%s).", exc)
+            secciones = rubric_service.normalizar_numeros(
+                [s["numero"] for s in rubric_service.seccion_index()]
+            )
+    metrics["secciones"] = secciones
 
-    metrics["kappa"] = compute_kappa([], [])
+    # ── Cosine (determinista, guardrail) ──────────────────────────────────
+    if input_text and output_text:
+        try:
+            metrics["cosine_similarity"] = compute_cosine_similarity(input_text, output_text)
+        except Exception as exc:
+            logger.warning("metrics: cosine falló (%s).", exc)
+
+    # ── Calificación de rúbrica ENTRADA (pre) y SALIDA (post) ─────────────
+    if pre_grade is None and input_text:
+        pre_grade = await judge_service.score_against_rubric(input_text, secciones, "ENTRADA")
+        metrics["rubrica_entrada"] = pre_grade
+
+    post_grade = None
+    if output_text:
+        post_grade = await judge_service.score_against_rubric(output_text, secciones, "SALIDA")
+        metrics["rubrica_salida"] = post_grade
+
+    # ── Gain Score (pre/post del MISMO juez, en puntos) ───────────────────
+    if pre_grade and post_grade:
+        gain = compute_gain_score(
+            pre_grade.get("obtenido"), post_grade.get("obtenido"), pre_grade.get("maximo")
+        )
+        metrics["gain_score"] = gain
+        metrics["gain_detail"] = {
+            "pre": pre_grade.get("obtenido"),
+            "post": post_grade.get("obtenido"),
+            "max": pre_grade.get("maximo"),
+        }
+
+    # ── G-Eval 1-5 de la SALIDA (métrica PRIMARIA de calidad) ─────────────
+    if output_text:
+        metrics["geval"] = await judge_service.geval_quality(output_text, secciones)
+
+    # ── Context Precision sobre los LIBROS recuperados ────────────────────
+    if reference_chunks:
+        metrics["context_precision_detail"] = await compute_context_precision(
+            question, reference_chunks, response=output_text or ""
+        )
+        metrics["context_precision"] = metrics["context_precision_detail"].get("score")
+
     return metrics

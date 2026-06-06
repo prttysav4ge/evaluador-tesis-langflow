@@ -37,16 +37,25 @@ pydantic>=2.5.0
 pydantic-settings>=2.2.0
 
 # Utilidades
-numpy>=1.24.0
+numpy>=1.24.0   # similitud coseno (guardrail) y aritmética de métricas
 
 # Interfaz visual (Streamlit)
 streamlit>=1.35.0
 plotly>=5.20.0
 pandas>=1.4.0
 
-# Métricas NLP: comparación texto original vs texto sugerido
-rouge-score>=0.1.2    # ROUGE-1/2/L
-sacrebleu>=2.4.0       # BLEU
+# Métricas del ciclo de mentoría (stack nuevo):
+#   1. G-Eval (LLM-as-judge)        → services/judge_service.py (Groq, sin dep extra)
+#   2. Gain Score (Hake)            → aritmética (numpy)
+#   3. Cosine Similarity (guardrail)→ embeddings e5 ya instalados (numpy)
+#   4. Context Precision (RAG)      → reimplementación fiel de
+#      llm_context_precision_without_reference con el juez LLM. NO se usa el
+#      paquete `ragas`: no es instalable en este entorno (Python 3.14 + langchain
+#      v1; ragas 0.3/0.4 exigen scikit-network sin wheel para 3.14, y ragas 0.2
+#      importa módulos que langchain v1 removió). La reimplementación da el mismo
+#      resultado sin la dependencia pesada (datasets/pyarrow), lo que además
+#      reduce la memoria en Streamlit Cloud.
+# ELIMINADAS: rouge-score (ROUGE) y sacrebleu (BLEU) ya no se usan.
 
 # NOTA: ejecutar streamlit con:
 #   python -m streamlit run streamlit_app.py

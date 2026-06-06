@@ -531,3 +531,40 @@ RESPONDE ÚNICAMENTE en JSON válido:
   "razonamiento": "2-4 oraciones justificando la nota según la rúbrica.",
   "score": 4
 }}"""
+
+
+def build_context_precision_prompt(
+    question: str, response: str, fragmentos: str
+) -> str:
+    """
+    Veredicto de relevancia por fragmento para Context Precision (componente
+    RAG, variante SIN referencia). Replica el juicio de
+    `llm_context_precision_without_reference` de Ragas: para CADA fragmento
+    recuperado de los libros, decide si fue ÚTIL para responder la pregunta.
+    El Average Precision se calcula después de forma determinista a partir de
+    estos veredictos (no lo calcula el LLM).
+    """
+    resp_block = (
+        f"\n=== RESPUESTA/EVALUACIÓN PRODUCIDA ===\n{response}\n" if response else ""
+    )
+    return f"""Eres un verificador de relevancia de contexto para un sistema RAG.
+
+TAREA: Para CADA fragmento recuperado de los libros de metodología, decide si el
+fragmento fue ÚTIL/RELEVANTE para responder la PREGUNTA (y, si se da, para
+sustentar la respuesta producida). Responde 1 si es relevante, 0 si no lo es.
+Juzga la utilidad real del contenido, no su parecido superficial.
+
+=== PREGUNTA ===
+{question}
+{resp_block}
+=== FRAGMENTOS RECUPERADOS (en orden) ===
+{fragmentos}
+
+RESPONDE ÚNICAMENTE en JSON válido. 'veredictos' debe tener un objeto por
+fragmento, en el MISMO orden, con su índice 1-based:
+{{
+  "veredictos": [
+    {{"idx": 1, "relevante": 1, "razon": "1 frase"}},
+    {{"idx": 2, "relevante": 0, "razon": "1 frase"}}
+  ]
+}}"""
