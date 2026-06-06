@@ -83,6 +83,10 @@ pyvenv.cfg
 *.db
 *.sqlite
 *.sqlite3
+# EXCEPCIÓN: el sqlite de la BD vectorial pre-construida SÍ debe subirse (es el
+# archivo que contiene la Biblioteca ya indexada; sin él, la nube re-indexa y
+# se queda sin memoria). La regla *.sqlite3 de arriba lo excluía por error.
+!chroma_db/chroma.sqlite3
 
 # ----- Claude Code: configuración local de permisos -----
 .claude/settings.local.json
