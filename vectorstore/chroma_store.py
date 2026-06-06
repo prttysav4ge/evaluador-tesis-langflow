@@ -199,7 +199,25 @@ class ChromaStore:
                 matched.append({"text": doc, "metadata": meta, "score": None})
 
         if matched:
-            matched.sort(key=lambda r: r["metadata"].get("pagina_inicio", 0))
+            # Orden de LECTURA, no por similitud (requisito: traer TODOS los
+            # fragmentos del punto en su orden original). Todos los chunks de una
+            # misma sección comparten `pagina_inicio` (= página de inicio de la
+            # sección), así que ese campo por sí solo NO desempata el orden
+            # intra-sección. `chunk_id` (= '..._chunk_0007', zero-padded) sí
+            # codifica el orden de inserción == orden de lectura del documento,
+            # y al estar acolchado a 4 dígitos el orden lexicográfico coincide
+            # con el numérico. Por eso se usa como clave de desempate.
+            def _orden_lectura(r: Dict[str, Any]) -> tuple:
+                m = r["metadata"] or {}
+                return (m.get("pagina_inicio", 0), str(m.get("chunk_id", "")))
+
+            matched.sort(key=_orden_lectura)
+            if len(matched) > k:
+                logger.warning(
+                    "⚠️  query_by_section('%s'): %s fragmentos exceden el cap %s; "
+                    "se truncan los últimos (se conservan los primeros EN ORDEN).",
+                    seccion, len(matched), k,
+                )
             logger.info(
                 f"🔎 query_by_section('{seccion}'): {len(matched)} fragmentos por metadata "
                 f"(cap {k})"
