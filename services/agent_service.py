@@ -35,7 +35,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.language_models import BaseChatModel
@@ -537,3 +537,105 @@ async def generate_texto_sugerido(
         response = await _ainvoke_with_retry(fallback_llm, _build_messages(ctx))
         logger.info(f"✅ Texto sugerido generado (fallback {_TEXTO_FALLBACK_MODEL})")
         return response.content.strip()
+
+
+# ====================================================================== #
+#  REDACTOR CON RÚBRICA — umbral: pulir vs reescribir                     #
+# ====================================================================== #
+
+async def run_redactor_rubrica(
+    question: str,
+    original_context: str,
+    final_evaluation: Dict[str, Any],
+    investigador_findings: Dict[str, Any],
+    secciones: Optional[List[int]] = None,
+    pre_grade: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Decide, con la rúbrica, si reescribir el texto de ENTRADA o solo recomendar
+    pulido, y produce el desglose por ítem.
+
+    Lógica (REDACTOR_UMBRAL, orientativo 90%):
+      - Selecciona dinámicamente las secciones de la rúbrica aplicables (juez),
+        salvo que se pasen ya calculadas.
+      - Califica la ENTRADA con el MISMO juez (regla pts_max/50%/0).
+      - Si la nota de la ENTRADA ≥ umbral → NO reescribe: devuelve recomendaciones
+        de pulido (ítems que no alcanzaron su máximo, con su justificación).
+      - Si < umbral → genera el TEXTO DE SALIDA mejorado (entrada + hallazgos de
+        los agentes previos) y expone, por cada ítem: punto + calificación + just.
+
+    El texto de SALIDA se evalúa luego como métrica G-Eval (cierre del ciclo, en
+    el módulo de métricas). `rubrica_entrada` y `secciones` se devuelven para que
+    las métricas on-demand las reusen (Gain pre / selección) sin recalcular.
+    """
+    from app.config import settings
+    from services import judge_service, rubric_service
+
+    # 1. Selección dinámica de secciones (reusa si ya vino).
+    seleccion_razon = ""
+    if not secciones:
+        sel = await judge_service.select_rubric_sections(question, original_context)
+        secciones = sel.get("secciones", [])
+        seleccion_razon = sel.get("razon", "")
+
+    # 2. Calificación de la ENTRADA (reusa si ya vino).
+    if pre_grade is None:
+        pre_grade = await judge_service.score_against_rubric(
+            original_context, secciones, "ENTRADA (texto del estudiante a evaluar)"
+        )
+
+    porcentaje = float(pre_grade.get("porcentaje", 0.0) or 0.0)
+    umbral = float(settings.REDACTOR_UMBRAL)
+    razonamiento_items = rubric_service.build_item_reasoning(secciones, pre_grade)
+
+    base = {
+        "umbral": umbral,
+        "secciones": secciones,
+        "seleccion_razon": seleccion_razon,
+        "rubrica_entrada": pre_grade,
+        "razonamiento_items": razonamiento_items,
+    }
+
+    # 3a. La entrada ya es buena (≥ umbral): solo pulir, NO reescribir.
+    if porcentaje >= umbral:
+        recomendaciones = [
+            {
+                "punto": it["punto"],
+                "criterio": it["criterio"],
+                "obtenido": it["obtenido"],
+                "maximo": it["maximo"],
+                "sugerencia": it["justificacion"],
+            }
+            for it in razonamiento_items
+            if it["obtenido"] < it["maximo"]
+        ]
+        logger.info(
+            "✏️  Redactor: ENTRADA %.0f%% ≥ umbral %.0f%% → solo pulir (%d ítems a mejorar).",
+            porcentaje * 100, umbral * 100, len(recomendaciones),
+        )
+        return {
+            **base,
+            "modo": "pulir",
+            "reescrito": False,
+            "texto_salida": None,
+            "recomendaciones_pulido": recomendaciones,
+        }
+
+    # 3b. La entrada está por debajo del umbral: producir TEXTO DE SALIDA mejorado.
+    logger.info(
+        "✏️  Redactor: ENTRADA %.0f%% < umbral %.0f%% → reescribiendo texto de salida.",
+        porcentaje * 100, umbral * 100,
+    )
+    texto_salida = await generate_texto_sugerido(
+        original_context=original_context,
+        question=question,
+        final_evaluation=final_evaluation,
+        investigador_findings=investigador_findings,
+    )
+    return {
+        **base,
+        "modo": "reescribir",
+        "reescrito": True,
+        "texto_salida": texto_salida,
+        "recomendaciones_pulido": [],
+    }

@@ -184,3 +184,39 @@ def compute_part_grade(
         "secciones": secciones,
         "por_item": por_item,
     }
+
+
+def build_item_reasoning(
+    numeros: List[int],
+    grade: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Construye el desglose por ítem que el Redactor debe exponer: por cada ítem
+    de las secciones seleccionadas → punto de la rúbrica + criterio +
+    calificación obtenida (sobre su máximo) + justificación del juez.
+
+    Args:
+        numeros: secciones seleccionadas.
+        grade:   salida de compute_part_grade enriquecida por el juez (incluye
+                 `por_item` y, si está, `justificaciones`).
+    """
+    por_item = grade.get("por_item", {}) or {}
+    justificaciones = grade.get("justificaciones", {}) or {}
+    salida: List[Dict[str, Any]] = []
+    for n in normalizar_numeros(numeros):
+        sec = get_seccion(n)
+        if not sec:
+            continue
+        for it in sec.get("items", []):
+            iid = it["id"]
+            info = por_item.get(iid, {})
+            salida.append({
+                "seccion": sec["numero"],
+                "seccion_nombre": sec["nombre"],
+                "punto": iid,
+                "criterio": it["criterio"],
+                "obtenido": info.get("obtenido", 0.0),
+                "maximo": info.get("maximo", float(it.get("pts_max", 0))),
+                "justificacion": justificaciones.get(iid, ""),
+            })
+    return salida

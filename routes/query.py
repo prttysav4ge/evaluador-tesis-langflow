@@ -315,34 +315,42 @@ async def query_thesis(body: QueryRequest) -> QueryResponse:
     ]
 
     # ------------------------------------------------------------------ #
-    #  4. Generar texto sugerido (post-pipeline, ambos modos)            #
-    #     Se limita a 45 s para no superar el timeout total del cliente. #
+    #  4. Redactor con rúbrica (post-pipeline, ambos modos)              #
+    #     Selecciona secciones, califica la ENTRADA y decide umbral:     #
+    #       ≥ umbral → solo recomendar pulido (NO reescribe).            #
+    #       < umbral → produce el TEXTO DE SALIDA mejorado.              #
+    #     `rubrica_entrada` y `secciones` quedan en el result para que   #
+    #     las métricas on-demand (Gain/G-Eval) las reusen sin recalcular.#
+    #     Se acota en tiempo para no superar el timeout del cliente.     #
     # ------------------------------------------------------------------ #
-    _TEXTO_SUGERIDO_TIMEOUT = 60  # segundos máximos para esta llamada extra
+    _REDACTOR_TIMEOUT = 90  # segundos máximos (incluye 2 llamadas de juez + reescritura)
     try:
-        from services.agent_service import generate_texto_sugerido
+        from services.agent_service import run_redactor_rubrica
         evaluation_data       = _extract_evaluation_data(result)
         investigador_findings = _extract_investigador_findings(result)
-        texto_sugerido = await asyncio.wait_for(
-            generate_texto_sugerido(
-                original_context=retrieved_context,
+        redactor = await asyncio.wait_for(
+            run_redactor_rubrica(
                 question=body.question,
+                original_context=retrieved_context,
                 final_evaluation=evaluation_data,
                 investigador_findings=investigador_findings,
             ),
-            timeout=_TEXTO_SUGERIDO_TIMEOUT,
+            timeout=_REDACTOR_TIMEOUT,
         )
-        result["texto_sugerido"]    = texto_sugerido
-        result["original_context"]  = retrieved_context   # para comparación en UI
+        result["redactor_rubrica"] = redactor
+        # texto_sugerido = el TEXTO DE SALIDA (None si la entrada ya era buena).
+        result["texto_sugerido"]   = redactor.get("texto_salida")
+        result["original_context"] = retrieved_context   # para comparación en UI
     except asyncio.TimeoutError:
         logger.warning(
-            f"⚠️  generate_texto_sugerido excedió {_TEXTO_SUGERIDO_TIMEOUT}s — "
-            "se omite en esta respuesta."
+            f"⚠️  run_redactor_rubrica excedió {_REDACTOR_TIMEOUT}s — se omite."
         )
+        result["redactor_rubrica"] = None
         result["texto_sugerido"]   = None
         result["original_context"] = retrieved_context
     except Exception as exc:
-        logger.warning(f"⚠️  No se pudo generar texto sugerido: {exc}")
+        logger.warning(f"⚠️  No se pudo ejecutar el Redactor con rúbrica: {exc}")
+        result["redactor_rubrica"] = None
         result["texto_sugerido"]   = None
         result["original_context"] = retrieved_context
 
