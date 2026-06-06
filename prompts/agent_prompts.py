@@ -419,3 +419,115 @@ REGLAS ESTRICTAS:
 8. NO inventes datos, estadísticas ni citas que no figuren en el texto original.
 9. Devuelve ÚNICAMENTE el texto mejorado: sin títulos, sin explicaciones,
    sin formato markdown, listo para copiar y pegar en la tesis."""
+
+
+# ====================================================================== #
+#  JUEZ LLM (LLM-as-judge) — selección de secciones, calificación, G-Eval #
+# ====================================================================== #
+
+def build_seleccion_secciones_prompt(
+    question: str, context: str, indice_secciones: str
+) -> str:
+    """
+    Pide al JUEZ razonar qué secciones de la rúbrica aplican a la PARTE de la
+    tesis que se está evaluando. Si se evalúa la tesis completa, deben aplicar
+    todas; si es una parte (p.ej. 'Formulación del problema'), solo las
+    secciones pertinentes.
+    """
+    return f"""Eres el JUEZ de una rúbrica metodológica de tesis (Hernández-Sampieri 2018).
+
+TAREA: Decidir QUÉ secciones de la rúbrica corresponden evaluar para la parte de
+la tesis que se te entrega. NO califiques todavía: solo selecciona las secciones
+aplicables y justifica brevemente.
+
+REGLAS:
+- Si el texto/pregunta abarca la TESIS COMPLETA, selecciona todas las secciones.
+- Si es una PARTE concreta (p.ej. solo la formulación del problema), selecciona
+  ÚNICAMENTE las secciones que evalúan esa parte. No incluyas secciones de
+  referencias, marco teórico, instrumentos, etc. si no están presentes.
+- Razona a partir del CONTENIDO real del texto, no solo del título.
+
+=== PREGUNTA / INSTRUCCIÓN DEL EVALUADOR ===
+{question}
+
+=== TEXTO DE LA TESIS A EVALUAR (fragmento) ===
+{context[:2500]}
+
+=== ÍNDICE DE SECCIONES DE LA RÚBRICA (número · nombre · pts máx) ===
+{indice_secciones}
+
+RESPONDE ÚNICAMENTE en JSON válido:
+{{
+  "secciones_aplicables": [3],
+  "razon": "1-2 oraciones explicando por qué esas secciones (y no otras)."
+}}"""
+
+
+def build_score_rubrica_prompt(
+    texto: str, bloque_rubrica: str, etiqueta_texto: str = "TEXTO A CALIFICAR"
+) -> str:
+    """
+    Pide al JUEZ calificar un texto contra las secciones seleccionadas de la
+    rúbrica, ítem por ítem, según la regla pts_max / 50% / 0. Se usa tanto para
+    la ENTRADA (decidir umbral del Redactor + 'pre' del Gain) como para la
+    SALIDA ('post' del Gain). El MISMO juez califica ambos para que el Gain sea
+    comparable.
+    """
+    return f"""Eres el JUEZ de una rúbrica metodológica de tesis (Hernández-Sampieri 2018).
+
+TAREA: Calificar el texto contra CADA ítem de las secciones de la rúbrica que se
+listan. Para cada ítem asigna:
+  - el puntaje MÁXIMO del ítem si el criterio SE CUMPLE COMPLETAMENTE,
+  - la MITAD del máximo si se cumple PARCIALMENTE,
+  - 0 si NO se cumple.
+No inventes ítems ni excedas el máximo de cada ítem. Sé estricto y objetivo.
+
+=== {etiqueta_texto} ===
+{texto}
+
+=== SECCIONES DE LA RÚBRICA A APLICAR (con el máximo de cada ítem) ===
+{bloque_rubrica}
+
+RESPONDE ÚNICAMENTE en JSON válido. Las claves de 'items' y 'justificaciones'
+deben ser los ids de los ítems (p.ej. "3.1"):
+{{
+  "items": {{ "3.1": 1.5, "3.2": 1.0 }},
+  "justificaciones": {{ "3.1": "por qué ese puntaje en 1 oración" }}
+}}"""
+
+
+def build_geval_prompt(texto_salida: str, bloque_rubrica: str) -> str:
+    """
+    G-Eval (estilo form-filling con cadena de razonamiento): el JUEZ evalúa la
+    CALIDAD del TEXTO DE SALIDA (reescrito por el Redactor) en una escala 1-5,
+    usando la rúbrica especializada como criterio. Es la métrica PRIMARIA de
+    calidad y NO se mezcla con la escala de puntos de la rúbrica.
+    """
+    return f"""Eres el JUEZ (LLM-as-judge, estilo G-Eval) de calidad metodológica de tesis.
+
+TAREA: Evaluar la CALIDAD del siguiente TEXTO DE SALIDA (una sección de tesis ya
+reescrita) en una escala de 1 a 5, tomando como criterio la rúbrica especializada.
+
+PASOS DE EVALUACIÓN (razónalos antes de puntuar):
+1. Lee el texto de salida con atención.
+2. Para cada sección de la rúbrica aplicable, valora qué tan bien la cumple el texto.
+3. Integra esas valoraciones en un juicio global de calidad.
+
+ESCALA (1-5):
+  5 = Excelente: cumple plenamente los criterios de la rúbrica, redacción precisa.
+  4 = Bueno: cumple la mayoría con observaciones menores.
+  3 = Aceptable: cumple parcialmente; deficiencias notorias pero no graves.
+  2 = Deficiente: incumple varios criterios clave.
+  1 = Insuficiente: no cumple los criterios mínimos.
+
+=== TEXTO DE SALIDA A EVALUAR ===
+{texto_salida}
+
+=== RÚBRICA (criterios de referencia) ===
+{bloque_rubrica}
+
+RESPONDE ÚNICAMENTE en JSON válido:
+{{
+  "razonamiento": "2-4 oraciones justificando la nota según la rúbrica.",
+  "score": 4
+}}"""

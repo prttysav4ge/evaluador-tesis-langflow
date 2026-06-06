@@ -23,6 +23,23 @@ class Settings(BaseSettings):
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "llama-3.1-8b-instant"   # mismo modelo que el Agentflow
 
+    # ----- JUEZ LLM (LLM-as-judge / G-Eval) -----
+    # Modelo que actúa como JUEZ de la rúbrica. DEBE ser distinto del modelo
+    # generador (GROQ_MODEL, p.ej. llama-4-scout) para evitar sesgo de
+    # autoevaluación. Se usa para: (a) seleccionar dinámicamente las secciones
+    # de la rúbrica aplicables, (b) calificar ENTRADA y SALIDA contra la rúbrica
+    # (alimenta el umbral del Redactor y el Gain Score), (c) el G-Eval 1-5 de
+    # calidad del texto de salida. Default: el modelo Groq más liviano (menos
+    # tokens). Se eligió llama-3.3-70b-versatile porque es el único que calificó
+    # de forma calibrada en las pruebas (el 8b daba notas erráticas 0%↔65% sobre
+    # el mismo texto; gpt-oss-20b daba 100% indulgente). Es distinto del modelo
+    # generador (scout), así que mantiene la independencia anti-sesgo. Solo se
+    # invoca on-demand (no en cada evaluación), por lo que el coste extra es acotado.
+    GEVAL_JUDGE_MODEL: str = "llama-3.3-70b-versatile"
+    # Umbral (fracción 0-1) sobre el máximo de las secciones evaluadas: si la
+    # nota de la ENTRADA lo alcanza, el Redactor NO reescribe (solo pule).
+    REDACTOR_UMBRAL: float = 0.90
+
     # OpenAI
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
