@@ -19,7 +19,9 @@ langchain-text-splitters>=0.3.0
 # langchain-ollama>=0.2.0
 
 # Vector Store
-chromadb>=0.5.0
+# Pin EXACTO: la base vectorial pre-construida (chroma_db/, commiteada) se generó
+# con esta versión; un formato distinto en la nube podría no poder leerla.
+chromadb==1.5.9
 
 # Embeddings
 sentence-transformers>=2.7.0

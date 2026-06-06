@@ -65,8 +65,11 @@ ENV/
 pyvenv.cfg
 
 # ----- Base de datos vectorial (ChromaDB) -----
-# Archivos generados localmente; se reconstruyen desde los PDFs fuente
-chroma_db/
+# SE COMMITEA pre-construida (con la Biblioteca ya indexada) para que Streamlit
+# Cloud NO la indexe en cada arranque: indexar 3 PDFs grandes + ~6.600 embeddings
+# agota la memoria/CPU del tier gratuito y mata el proceso. Con la BD ya hecha,
+# el arranque solo la carga (el lifespan ve refs_count>0 y omite el indexado).
+# Por eso 'chroma_db/' ya NO se ignora.
 
 # ----- Biblioteca Metodológica -----
 # Los PDFs de referencia SÍ se trackean en reference_books/ porque el
