@@ -1154,21 +1154,67 @@ def _render_tab_evaluation(agents: dict, final_data: dict, raw_result: dict) -> 
     """Pestaña 1 — Evaluación: texto final, feedback auditor, recomendaciones."""
     texto_sugerido   = raw_result.get("texto_sugerido")
     original_context = raw_result.get("original_context", "")
+    redactor         = raw_result.get("redactor_rubrica") or {}
+    modo             = redactor.get("modo")
+    pre              = redactor.get("rubrica_entrada") or {}
+    secciones        = redactor.get("secciones") or []
 
-    # ── Texto final (sugerido por Redactor / Mentor Final) ──────────────
-    st.subheader("✏️ Texto final (versión mejorada)")
-    if texto_sugerido:
+    # ── Banner del Redactor: decisión de umbral + nota de rúbrica ENTRADA ─
+    if modo:
+        pct    = float(pre.get("porcentaje", 0.0) or 0.0)
+        umbral = float(redactor.get("umbral", 0.90) or 0.90)
+        secs   = ", ".join(str(s) for s in secciones) or "—"
+        if modo == "pulir":
+            st.success(
+                f"🟢 La **entrada** ya alcanza la calidad requerida "
+                f"({pct:.0%} ≥ umbral {umbral:.0%} sobre {pre.get('maximo','—')} pts). "
+                f"No se reescribió: solo se recomienda pulir detalles."
+            )
+        else:
+            st.warning(
+                f"🟠 La **entrada** está por debajo del umbral "
+                f"({pct:.0%} < {umbral:.0%} sobre {pre.get('maximo','—')} pts). "
+                f"Se generó un **texto de salida** mejorado."
+            )
+        st.caption(f"Secciones de rúbrica evaluadas: **{secs}**")
+        if redactor.get("seleccion_razon"):
+            st.caption(f"_Por qué esas secciones: {redactor['seleccion_razon']}_")
+
+    # ── Texto final / recomendaciones según el modo ─────────────────────
+    st.subheader("✏️ Texto final")
+    if modo == "pulir":
+        st.info("La sección se conserva (calidad suficiente). Recomendaciones de pulido:")
+        recs = redactor.get("recomendaciones_pulido") or []
+        if recs:
+            import pandas as _pd
+            st.dataframe(
+                _pd.DataFrame([
+                    {
+                        "Punto": r["punto"],
+                        "Criterio": r["criterio"],
+                        "Obtenido": r["obtenido"],
+                        "Máx": r["maximo"],
+                        "Sugerencia": r.get("sugerencia", ""),
+                    } for r in recs
+                ]),
+                hide_index=True, use_container_width=True,
+            )
+        else:
+            st.caption("Sin observaciones: todos los ítems alcanzaron su máximo.")
+        st.text_area("Texto conservado (sin cambios)", value=original_context,
+                     height=240, disabled=True)
+    elif texto_sugerido:
         col_orig, col_sug = st.columns(2, gap="medium")
         with col_orig:
             st.markdown(
-                "<p style='font-weight:600;color:#888'>📄 Texto original</p>",
+                "<p style='font-weight:600;color:#888'>📄 Texto original (entrada)</p>",
                 unsafe_allow_html=True,
             )
             st.text_area("original", value=original_context, height=320,
                          disabled=True, label_visibility="collapsed")
         with col_sug:
             st.markdown(
-                "<p style='font-weight:600;color:#2e7d32'>✨ Texto sugerido</p>",
+                "<p style='font-weight:600;color:#2e7d32'>✨ Texto de salida (mejorado)</p>",
                 unsafe_allow_html=True,
             )
             st.text_area("sugerido", value=texto_sugerido, height=320,
@@ -1176,11 +1222,17 @@ def _render_tab_evaluation(agents: dict, final_data: dict, raw_result: dict) -> 
                          help="Selecciona todo (Ctrl+A) y copia.")
     else:
         st.info(
-            "Texto sugerido no disponible. Suele deberse al límite TPM de Groq "
+            "Texto de salida no disponible. Suele deberse al límite TPM de Groq "
             "(tier free): el pipeline ya consumió la cuota de tokens del minuto y "
             "la última llamada recibió un 429. Reintenta en ~1 min, baja las "
             "iteraciones/Top-K, o revisa que `GROQ_API_KEY` esté configurada."
         )
+
+    # ── Desglose por ítem de la rúbrica (ENTRADA): punto + nota + just. ──
+    razon = redactor.get("razonamiento_items") or []
+    if razon:
+        with st.expander("📋 Desglose por ítem de la rúbrica (entrada)", expanded=False):
+            _render_rubric_breakdown(razon)
 
     # ── Feedback del Auditor ─────────────────────────────────────────────
     auditor = agents.get("auditor", {})
@@ -1467,78 +1519,81 @@ def _render_tab_reportes(
     """Pestaña 4 — Reportes (métricas NLP + 3 descargas)."""
     import json as _json
 
-    # ── Métricas NLP ─────────────────────────────────────────────────────
-    st.subheader("📊 Métricas NLP")
+    # ── Módulo de métricas (las 4 definitivas) ───────────────────────────
+    st.subheader("📊 Métricas del ciclo")
     st.caption(
-        "Comparan el _texto original_ analizado vs el _texto sugerido_ "
-        "(reescritura propuesta por el pipeline)."
+        "**G-Eval** (calidad del texto de salida, 1-5, juez LLM) · **Gain Score** "
+        "(mejora de Hake entrada→salida sobre la rúbrica) · **Cosine** (guardrail "
+        "semántico, no mide calidad) · **Context Precision** (relevancia de los "
+        "fragmentos de los libros, RAG). Se calculan on-demand."
     )
 
-    texto_sugerido   = result.get("result", {}).get("texto_sugerido")
-    original_context = result.get("result", {}).get("original_context", "") \
-        or result.get("context_preview", "")
-
-    # ── Extraer puntajes reales por iteración para Gain / Kappa ─────────
-    raw_result = result.get("result", {}) or {}
-    history    = raw_result.get("iterations_history") or []
-    iter_scores: list[float] = []
-    for entry in history:
-        _, iter_final = _agents_from_iteration_entry(entry)
-        iter_scores.append(_extract_score(iter_final))
-    iter_scores = [s for s in iter_scores if s]  # descarta ceros
-
-    final_score    = _extract_score(final_data)
-    first_score    = iter_scores[0] if iter_scores else None
-    multi_iter     = len(iter_scores) >= 2
+    raw_result       = result.get("result", {}) or {}
+    redactor         = raw_result.get("redactor_rubrica") or {}
+    texto_sugerido   = raw_result.get("texto_sugerido")
+    original_context = raw_result.get("original_context", "") or result.get("context_preview", "")
+    secciones        = redactor.get("secciones") or []
+    pre_grade        = redactor.get("rubrica_entrada")
+    reference_chunks = [
+        c.get("text", "") for c in (raw_result.get("reference_chunks") or []) if c.get("text")
+    ]
+    # Si hubo reescritura, la salida es texto_sugerido; si no (entrada ≥ umbral),
+    # la "salida" final es la propia entrada conservada → se evalúa igual.
+    effective_output = texto_sugerido or original_context
 
     metrics = st.session_state.get("last_metrics")
 
-    if not texto_sugerido or not original_context:
-        st.info("Las métricas requieren texto original + sugerido. No hay datos suficientes.")
+    if not original_context:
+        st.info("No hay datos suficientes para calcular métricas.")
     elif metrics is None:
-        if st.button("🧮 Calcular métricas NLP", type="primary"):
-            with st.spinner("Calculando ROUGE / BLEU / similitud coseno…"):
-                from services.metrics_service import (
-                    compute_all, compute_iteration_consistency,
-                )
-                # Gain real: si hay múltiples iteraciones, score_before =
-                # puntaje de iter 1; si no, baseline neutral 5.0.
-                score_before = first_score if multi_iter else 5.0
-                metrics = compute_all(
-                    reference=original_context,
-                    hypothesis=texto_sugerido,
-                    score_before=score_before,
-                    score_after=final_score,
-                )
-                # Kappa proxy: consistencia entre iteraciones. None si N<2.
-                metrics["iteration_consistency"] = compute_iteration_consistency(iter_scores)
-                metrics["iter_scores"] = iter_scores
+        if st.button("🧮 Calcular métricas (juez LLM)", type="primary"):
+            import asyncio as _asyncio
+            from services.metrics_service import compute_all_metrics
+            with st.spinner("Calculando G-Eval · Gain · Cosine · Context Precision…"):
+                metrics = _asyncio.run(compute_all_metrics(
+                    input_text=original_context,
+                    output_text=effective_output,
+                    question=question,
+                    secciones=secciones or None,
+                    reference_chunks=reference_chunks or None,
+                    pre_grade=pre_grade,
+                ))
                 st.session_state["last_metrics"] = metrics
                 st.rerun()
     else:
+        geval = metrics.get("geval") or {}
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("ROUGE-1",      _fmt(metrics.get("rouge1")))
-        m2.metric("ROUGE-2",      _fmt(metrics.get("rouge2")))
-        m3.metric("ROUGE-L",      _fmt(metrics.get("rougeL")))
-        m4.metric("BLEU",         _fmt(metrics.get("bleu")))
-        m5, m6, m7, m8 = st.columns(4)
-        m5.metric("Cos sim",      _fmt(metrics.get("cosine_similarity")))
-        m6.metric("Gain Score",   _fmt(metrics.get("gain_score")))
-        # Cuando hay múltiples iteraciones, reemplazamos Kappa por la
-        # consistencia entre iteraciones (más interpretable que Cohen).
-        consistency = metrics.get("iteration_consistency")
-        if consistency is not None:
-            m7.metric("Consistencia iter.", _fmt(consistency),
-                      help="Proporción de iteraciones con puntaje dentro de ±1.0 del promedio.")
-        else:
-            m7.metric("Kappa",        _fmt(metrics.get("kappa")))
-        m8.metric("Puntaje 0-10", f"{final_score:.1f}")
+        m1.metric("G-Eval (1-5)", _fmt(geval.get("score")),
+                  help="Calidad del texto de salida según la rúbrica (juez LLM). Métrica PRIMARIA.")
+        m2.metric("Gain Score", _fmt(metrics.get("gain_score")),
+                  help="Ganancia de Hake (post-pre)/(máx-pre) sobre la nota de rúbrica. Mismo juez.")
+        m3.metric("Cosine (guardrail)", _fmt(metrics.get("cosine_similarity")),
+                  help="≈1 = no reescribió · ≈0 = se desvió del sentido. NO mide calidad.")
+        m4.metric("Context Precision", _fmt(metrics.get("context_precision")),
+                  help="Relevancia de los fragmentos recuperados de los libros (RAG, Average Precision).")
 
-        if multi_iter:
-            scores_str = " → ".join(f"{s:.1f}" for s in iter_scores)
-            st.caption(f"_Puntajes por iteración: {scores_str}._")
-        if metrics.get("kappa") is None and consistency is None:
-            st.caption("_Kappa: requiere ≥2 iteraciones. Ajustá el slider del Paso 3 para activar._")
+        if geval.get("razonamiento"):
+            st.caption(f"_G-Eval — {geval['razonamiento']}_")
+        gd = metrics.get("gain_detail")
+        if gd:
+            st.caption(
+                f"_Gain — entrada {gd.get('pre')} → salida {gd.get('post')} "
+                f"(máx {gd.get('max')} pts de las secciones {metrics.get('secciones')})._"
+            )
+        if not texto_sugerido:
+            st.caption(
+                "_No hubo reescritura (la entrada ya superaba el umbral): la salida = "
+                "entrada, por eso Cosine≈1 y Gain≈0 son esperables._"
+            )
+
+        # Desglose de la nota de rúbrica de la SALIDA (post), si se calculó.
+        salida = metrics.get("rubrica_salida") or {}
+        if salida.get("por_item"):
+            with st.expander("📋 Nota de rúbrica del texto de SALIDA (post)", expanded=False):
+                from services import rubric_service as _R
+                _render_rubric_breakdown(
+                    _R.build_item_reasoning(metrics.get("secciones") or [], salida)
+                )
 
     st.markdown("---")
 
@@ -1552,6 +1607,7 @@ def _render_tab_reportes(
         "elapsed_seconds":   result.get("elapsed_seconds"),
         "agents":            agents,
         "final_evaluation":  final_data,
+        "redactor_rubrica":  redactor,   # modo, secciones, rúbrica entrada, razonamiento
         "texto_sugerido":    texto_sugerido,
         "original_context":  original_context,
         "thread_id":         st.session_state.get("thread_id"),
@@ -1559,7 +1615,7 @@ def _render_tab_reportes(
         "iterations":        st.session_state.get("iterations"),
     }
     debate_md  = _build_debate_markdown(agents, final_data)
-    metricas   = metrics or {"info": "No calculadas todavía. Pulsa 'Calcular métricas NLP'."}
+    metricas   = metrics or {"info": "No calculadas todavía. Pulsa 'Calcular métricas (juez LLM)'."}
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -1595,6 +1651,22 @@ def _fmt(v: Any) -> str:
     if isinstance(v, float):
         return f"{v:.3f}"
     return str(v)
+
+
+def _render_rubric_breakdown(items: list) -> None:
+    """Tabla del desglose por ítem: punto + criterio + obtenido/máx + justificación."""
+    import pandas as _pd
+
+    df = _pd.DataFrame([
+        {
+            "Punto": it["punto"],
+            "Criterio": it["criterio"],
+            "Obtenido": it["obtenido"],
+            "Máx": it["maximo"],
+            "Justificación": it.get("justificacion", ""),
+        } for it in items
+    ])
+    st.dataframe(df, hide_index=True, use_container_width=True)
 
 
 def _build_debate_markdown(agents: dict, final_data: dict) -> str:
