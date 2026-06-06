@@ -1772,13 +1772,32 @@ def _render_query_result_block(
     iterations = result.get("iterations_count") or len(
         raw_result.get("iterations_history", [])
     ) or 1
-    score      = _extract_score(final_data)
-    vigesimal  = round(score * 2, 1)
+
+    # La nota de la PARTE evaluada sale de la RÚBRICA (juez), no del auto-score
+    # del agente de Síntesis: nota = ítems obtenidos / máximo de las secciones
+    # seleccionadas. Se escala a 0-10 y a vigesimal (0-20). Si por algún motivo
+    # no hay rúbrica (Redactor falló), cae al score del agente como respaldo.
+    _redactor   = raw_result.get("redactor_rubrica") or {}
+    _pre        = _redactor.get("rubrica_entrada") or {}
+    _pct        = _pre.get("porcentaje")
+    _tiene_rub  = isinstance(_pct, (int, float)) and _pre.get("maximo")
+    if _tiene_rub:
+        score     = round(float(_pct) * 10, 1)
+        vigesimal = round(float(_pct) * 20, 1)
+        nota_caption = (
+            f"Nota de rúbrica: **{_pre.get('obtenido')}/{_pre.get('maximo')} pts** "
+            f"({float(_pct):.0%}) · Secciones {_redactor.get('secciones')}"
+        )
+    else:
+        score     = _extract_score(final_data)
+        vigesimal = round(score * 2, 1)
+        nota_caption = "_Nota del agente (rúbrica no disponible)._"
 
     h1, h2, h3 = st.columns(3)
     h1.metric("Iteraciones",     iterations)
     h2.metric("Puntaje (0-10)",  f"{score:.1f}")
     h3.metric("Nota vigesimal",  f"{vigesimal:.1f}")
+    st.caption(nota_caption)
     st.caption(
         f"Modo: `{result.get('mode', '—')}` · Chunks: {result.get('chunks_retrieved', '—')} · "
         f"Tiempo: {result.get('elapsed_seconds', elapsed)} s"
