@@ -22,6 +22,66 @@ logger = logging.getLogger(__name__)
 MAX_FRAGMENTOS_SECCION = 20
 
 
+def _ensure_writable_dir(path: str) -> str:
+    """
+    Devuelve un directorio de ChromaDB ESCRIBIBLE.
+
+    En Streamlit Community Cloud el checkout del repo es de SOLO LECTURA, así que
+    el `chroma_db` horneado (con la Biblioteca pre-indexada) no admite escrituras
+    y ChromaDB falla con "attempt to write a readonly database" (SQLite 1032) al
+    abrir la colección o subir un PDF. Si el directorio configurado no es
+    escribible, copiamos la semilla a un temporal escribible (`/tmp`) y usamos
+    ese — conservando la Biblioteca indexada y permitiendo escrituras.
+
+    En local (directorio escribible) devuelve la misma ruta sin tocar nada.
+    """
+    import os
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    src = Path(path)
+    try:
+        src.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # parent de solo lectura: la copia a /tmp lo resuelve abajo
+
+    def _writable(p: Path) -> bool:
+        if not p.exists() or not os.access(p, os.W_OK):
+            return False
+        sqlite = p / "chroma.sqlite3"
+        if sqlite.exists() and not os.access(sqlite, os.W_OK):
+            return False  # git deja el .sqlite3 como solo lectura
+        try:
+            probe = p / ".rw_probe"
+            probe.touch()
+            probe.unlink()
+            return True
+        except OSError:
+            return False
+
+    if _writable(src):
+        return str(src)
+
+    dest = Path(tempfile.gettempdir()) / "chroma_db_rw"
+    if not dest.exists():
+        if src.exists():
+            shutil.copytree(src, dest)
+            # copytree preserva los bits de solo-lectura de git → restituirlos.
+            for root, dirs, files in os.walk(dest):
+                for d in dirs:
+                    os.chmod(os.path.join(root, d), 0o777)
+                for f in files:
+                    os.chmod(os.path.join(root, f), 0o666)
+        else:
+            dest.mkdir(parents=True, exist_ok=True)
+    logger.warning(
+        "ChromaDB: '%s' es de solo lectura (p.ej. Streamlit Cloud); "
+        "usando copia escribible en '%s'.", src, dest,
+    )
+    return str(dest)
+
+
 # ── Helpers de jerarquía de secciones (portados de langgraph tesis_store.py) ──
 
 def _extraer_prefijo(nombre: str) -> str:
@@ -47,6 +107,7 @@ class ChromaStore:
     _instance: "ChromaStore | None" = None
     _client: chromadb.PersistentClient | None = None
     _collection: chromadb.Collection | None = None
+    _persist_dir: str | None = None
 
     def __new__(cls) -> "ChromaStore":
         if cls._instance is None:
@@ -61,7 +122,8 @@ class ChromaStore:
         """Debe llamarse una vez al iniciar el servidor (lifespan)."""
         from app.config import settings
 
-        self._client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+        self._persist_dir = _ensure_writable_dir(settings.CHROMA_PERSIST_DIR)
+        self._client = chromadb.PersistentClient(path=self._persist_dir)
         self._collection = self._client.get_or_create_collection(
             name=settings.CHROMA_COLLECTION,
             metadata={"hnsw:space": "cosine"},
@@ -70,7 +132,7 @@ class ChromaStore:
         logger.info(
             f"✅ ChromaDB listo | Colección: '{settings.CHROMA_COLLECTION}' "
             f"| Chunks almacenados: {total} "
-            f"| Directorio: {settings.CHROMA_PERSIST_DIR}"
+            f"| Directorio: {self._persist_dir}"
         )
 
     @property
@@ -264,7 +326,7 @@ class ChromaStore:
         return {
             "collection": settings.CHROMA_COLLECTION,
             "total_chunks": count,
-            "persist_dir": settings.CHROMA_PERSIST_DIR,
+            "persist_dir": self._persist_dir or settings.CHROMA_PERSIST_DIR,
             "status": "ready" if count > 0 else "empty",
         }
 
