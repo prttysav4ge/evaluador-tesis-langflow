@@ -7,7 +7,7 @@
 #     LANGFLOW_URL=http://localhost:7860   (ver .env)
 #
 # No hay servicio backend en este compose, así que NO hay `depends_on`.
-# `${GROQ_API_KEY}` se interpola desde el archivo .env de esta misma carpeta.
+# `${OPENAI_API_KEY}` se interpola desde el archivo .env de esta misma carpeta.
 
 services:
   langflow:
@@ -42,7 +42,7 @@ services:
       # volumen → el flujo se perdía en cada recreate. La reubicamos al volumen
       # persistido (cuatro barras = ruta absoluta).
       - LANGFLOW_DATABASE_URL=sqlite:////app/data/langflow.db
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
 
 volumes:

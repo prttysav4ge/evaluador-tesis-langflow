@@ -7,9 +7,9 @@ prompts/agent_prompts.py con centinelas, y reemplazándolos por variables
 esquema JSON quedan intactas).
 
 Topología:
-  PromptX -> GroqX  (cadena LLM)
-  GroqX.text_output -> PromptY.<memvar>  (memoria acumulada)
-  Groq*  -> PromptAssembler.<var> -> ChatOutput  (estado completo)
+  PromptX -> LlmX  (cadena LLM, OpenAIModel gpt-4o-mini)
+  LlmX.text_output -> PromptY.<memvar>  (memoria acumulada)
+  Llm*  -> PromptAssembler.<var> -> ChatOutput  (estado completo)
 
 Los campos de datos (question, context, reference_context, previous_iteration)
 NO se cablean: el cliente los inyecta por `tweaks` en tiempo de ejecución.
@@ -28,11 +28,11 @@ with open("auto.json", encoding="utf-8") as f:
 with open("lf_all.json", encoding="utf-8") as f:
     ALL = json.load(f)
 
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+OPENAI_MODEL = "gpt-4o-mini"
 with open(".env", encoding="utf-8") as f:
     for line in f:
-        if line.startswith("GROQ_API_KEY="):
-            GROQ_KEY = line.split("=", 1)[1].strip()
+        if line.startswith("OPENAI_API_KEY="):
+            OPENAI_KEY = line.split("=", 1)[1].strip()
 
 SYS_MSG = "Eres un evaluador académico experto. Responde ÚNICAMENTE en JSON válido."
 
@@ -121,17 +121,17 @@ def make_prompt(node_id, template_text, varnames, pos):
     nd["field_order"] = nd.get("field_order", []) + list(varnames)
     return make_node(node_id, "Prompt Template", nd, pos)
 
-def make_groq(node_id, pos):
-    nd = comp("groq", "GroqModel")
-    nd["template"]["model_name"]["value"] = GROQ_MODEL
-    nd["template"]["api_key"]["value"] = GROQ_KEY
+def make_openai(node_id, pos):
+    nd = comp("openai", "OpenAIModel")
+    nd["template"]["model_name"]["value"] = OPENAI_MODEL
+    nd["template"]["api_key"]["value"] = OPENAI_KEY
     # load_from_db=False: usar el valor LITERAL, no resolverlo como nombre de
-    # variable global de Langflow (que provocaría "GROQ_API_KEY no seteada").
+    # variable global de Langflow (que provocaría "OPENAI_API_KEY no seteada").
     nd["template"]["api_key"]["load_from_db"] = False
     nd["template"]["temperature"]["value"] = 0.3
     nd["template"]["max_tokens"]["value"] = 800
     nd["template"]["system_message"]["value"] = SYS_MSG
-    return make_node(node_id, "GroqModel", nd, pos)
+    return make_node(node_id, "OpenAIModel", nd, pos)
 
 def make_io(node_id, name, pos):
     nd = comp("input_output", name)
@@ -169,17 +169,17 @@ agents = ["Supervisor", "Investigador", "Auditor", "Metodologo", "Redactor", "Si
 
 # Layout en 3 carriles para legibilidad: cada agente ocupa una columna
 # (x = i*X_STEP) y sus 3 nodos se apilan en filas fijas — Prompt arriba (y=0),
-# Groq en medio (y=220), Clean abajo (y=440). Así la cadena de cada agente se
+# LLM en medio (y=220), Clean abajo (y=440). Así la cadena de cada agente se
 # lee recta hacia abajo y el avance entre agentes de izquierda a derecha.
 X_STEP = 380
 for i, a in enumerate(agents):
-    pid, gid, cid = f"Prompt{a}", f"Groq{a}", f"Clean{a}"
+    pid, gid, cid = f"Prompt{a}", f"Llm{a}", f"Clean{a}"
     tmpl, vrs = prompts[a]
     nodes.append(make_prompt(pid, tmpl, vrs, {"x": i * X_STEP, "y": 0}))
-    nodes.append(make_groq(gid, {"x": i * X_STEP, "y": 220}))
+    nodes.append(make_openai(gid, {"x": i * X_STEP, "y": 220}))
     nodes.append(make_cleaner(cid, {"x": i * X_STEP, "y": 440}))
     NODE_CTYPE[pid] = "Prompt Template"
-    NODE_CTYPE[gid] = "GroqModel"
+    NODE_CTYPE[gid] = "OpenAIModel"
     NODE_CTYPE[cid] = "JSONCleaner"
 
 nodes.append(make_prompt("PromptAssembler", ASSEMBLER_TMPL, ASSEMBLER_VARS, {"x": 6 * X_STEP, "y": 0}))
@@ -193,19 +193,19 @@ NODE_CTYPE["ChatOutputMain"] = "ChatOutput"
 MSG = ["Message"]
 edges = []
 
-def link_prompt_to_groq(a):
-    edges.append(edge(f"Prompt{a}", "prompt", MSG, f"Groq{a}", "input_value", MSG, "str"))
+def link_prompt_to_llm(a):
+    edges.append(edge(f"Prompt{a}", "prompt", MSG, f"Llm{a}", "input_value", MSG, "str"))
 
-def link_groq_to_clean(a):
-    edges.append(edge(f"Groq{a}", "text_output", MSG, f"Clean{a}", "json_str", MSG, "str"))
+def link_llm_to_clean(a):
+    edges.append(edge(f"Llm{a}", "text_output", MSG, f"Clean{a}", "json_str", MSG, "str"))
 
 def link_mem(src_agent, tgt_prompt, var):
     # consume la salida YA LIMPIA (sin fences markdown) del agente fuente
     edges.append(edge(f"Clean{src_agent}", "output", MSG, tgt_prompt, var, ["Message", "Text"], "str"))
 
 for a in agents:
-    link_prompt_to_groq(a)
-    link_groq_to_clean(a)
+    link_prompt_to_llm(a)
+    link_llm_to_clean(a)
 
 # memoria acumulada (réplica del orden de services/agent_service.py)
 link_mem("Supervisor",  "PromptInvestigador", "intake")

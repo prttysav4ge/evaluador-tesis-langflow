@@ -7,18 +7,18 @@ Navegador ─► Streamlit Community Cloud (streamlit_app.py + FastAPI embebido)
                        │  POST /api/v1/run/evaluador-tesis  (HTTPS + x-api-key)
                        ▼
              Hugging Face Space (Docker)  ──►  Langflow 1.9.5 + flujo de 6 agentes
-                                                 (GROQ_API_KEY como variable global)
+                                                 (OPENAI_API_KEY como variable global)
 ```
 
 - Los **6 agentes** corren en **Langflow**, alojado en un **HF Space (Docker SDK)**.
 - El **flujo va horneado** en la imagen (`hf_space/flows/evaluador-tesis.json`) y se
   carga al arrancar con `LANGFLOW_LOAD_FLOWS_PATH` → no depende del disco efímero.
-- **Nada hardcodeado**: la clave de Groq y las credenciales viven en *Secrets*.
+- **Nada hardcodeado**: la clave de OpenAI y las credenciales viven en *Secrets*.
 - Auth: `AUTO_LOGIN=false` + superusuario. El cliente Streamlit hace login y
   **crea/renueva la API key en runtime** (sobrevive a los reinicios del Space).
 
 > Validado en local: la imagen del Space corriendo como uid 1000 (igual que HF)
-> auto-carga el flujo, exige auth en `/run`, resuelve la clave Groq desde el
+> auto-carga el flujo, exige auth en `/run`, resuelve la clave OpenAI desde el
 > entorno y devuelve las 6 claves del panel. El cliente adaptado funciona contra
 > ese contenedor y también en modo local sin auth.
 
@@ -38,7 +38,7 @@ Navegador ─► Streamlit Community Cloud (streamlit_app.py + FastAPI embebido)
 
    | Secret | Valor |
    |--------|-------|
-   | `GROQ_API_KEY` | tu clave de Groq (`gsk_…`) |
+   | `OPENAI_API_KEY` | tu clave de OpenAI (`sk-proj-…`) |
    | `LANGFLOW_SUPERUSER` | p.ej. `admin` |
    | `LANGFLOW_SUPERUSER_PASSWORD` | una contraseña fuerte |
    | `LANGFLOW_SECRET_KEY` | una cadena aleatoria larga (cifra variables) |
@@ -82,8 +82,8 @@ Tras el push, confirma en GitHub que **no** aparecen `.env` ni `secrets.toml`.
    [`.streamlit/secrets.cloud.example.toml`](.streamlit/secrets.cloud.example.toml)
    con los valores reales. Lo esencial:
    ```toml
-   LLM_PROVIDER = "groq"
-   GROQ_API_KEY = "gsk_…"
+   LLM_PROVIDER = "openai"
+   OPENAI_API_KEY = "sk-proj-…"
    USE_LANGFLOW = "true"
    LANGFLOW_URL = "https://TU-USUARIO-evaluador-tesis-langflow.hf.space"
    LANGFLOW_FLOW_ID = "evaluador-tesis"

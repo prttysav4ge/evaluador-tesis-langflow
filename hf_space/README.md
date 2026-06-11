@@ -22,7 +22,7 @@ efímero del Space.
 
 | Secret | Para qué |
 |--------|----------|
-| `GROQ_API_KEY` | Clave de Groq; se inyecta como variable global del flujo |
+| `OPENAI_API_KEY` | Clave de OpenAI; se inyecta como variable global del flujo |
 | `LANGFLOW_SUPERUSER` | Usuario admin (auth API; `AUTO_LOGIN=false`) |
 | `LANGFLOW_SUPERUSER_PASSWORD` | Contraseña admin |
 | `LANGFLOW_SECRET_KEY` | (Recomendado) clave fija para cifrar variables |
